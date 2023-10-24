@@ -2,15 +2,14 @@ FROM lambci/lambda-base:build
 
 RUN yum update -y
 
-RUN yum install -y libpng-devel libjpeg-devel libtiff-devel libuuid-devel gcc
+RUN yum install -y libpng-devel libjpeg-devel libtiff-devel libuuid-devel gcc wget
 
-ARG GM_VERSION
-
-RUN curl https://versaweb.dl.sourceforge.net/project/graphicsmagick/graphicsmagick/${GM_VERSION}/GraphicsMagick-${GM_VERSION}.tar.xz | tar -xJ && \
-  cd GraphicsMagick-${GM_VERSION} && \
-  ./configure --prefix=/opt --enable-shared=no --enable-static=yes --with-gs-font-dir=/opt/share/fonts/default/Type1 && \
-  make && \
-  make install
+RUN wget https://sourceforge.net/projects/graphicsmagick/files/graphicsmagick/1.3.31/GraphicsMagick-1.3.31.tar.gz
+RUN tar xzf GraphicsMagick-1.3.31.tar.gz
+RUN cd GraphicsMagick-1.3.31 && \
+./configure --prefix=/opt --enable-shared=no --enable-static=yes --with-gs-font-dir=/opt/share/fonts/default/Type1 && \
+make && \
+make install
 
 RUN cp /usr/lib64/liblcms2.so* /opt/lib && \
   cp /usr/lib64/libtiff.so* /opt/lib && \
@@ -27,7 +26,7 @@ RUN cp /usr/lib64/liblcms2.so* /opt/lib && \
   cp /usr/lib64/libjbig.so* /opt/lib && \
   cp /usr/lib64/libxcb.so* /opt/lib && \
   cp /usr/lib64/libXau.so* /opt/lib && \
-  cp /usr/lib64/libuuid.so /opt/lib/libuuid.so.1 && \  
+  cp /usr/lib64/libuuid.so /opt/lib/libuuid.so.1 && \
   cp /usr/lib64/libbz2.so /opt/lib/libbz2.so.1
 
 RUN mkdir -p /opt/share/fonts/default && \
@@ -35,4 +34,5 @@ RUN mkdir -p /opt/share/fonts/default && \
 
 RUN cd /opt && \
   find . ! -perm -o=r -exec chmod +400 {} \; && \
-  zip -yr /tmp/gm-${GM_VERSION}.zip ./*
+  zip -yr /tmp/gm-1.3.31.zip ./*
+
