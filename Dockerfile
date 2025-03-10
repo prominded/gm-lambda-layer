@@ -19,6 +19,7 @@ RUN cp /usr/lib64/liblcms2.so* /opt/lib && \
   cp /usr/lib64/libXext.so* /opt/lib && \
   cp /usr/lib64/libSM.so* /opt/lib && \
   cp /usr/lib64/libICE.so* /opt/lib && \
+  cp /usr/lib64/libXt.so* /opt/lib && \
   cp /usr/lib64/libX11.so* /opt/lib && \
   cp /usr/lib64/liblzma.so* /opt/lib && \
   cp /usr/lib64/libxml2.so* /opt/lib && \
