@@ -1,0 +1,19 @@
+FROM lambci/lambda-base:build
+
+RUN curl -OL https://github.com/ArtifexSoftware/ghostpdl-downloads/releases/download/gs10051/ghostscript-10.05.1.tar.gz
+
+RUN tar -zxf ghostscript-10.05.1.tar.gz
+
+RUN cd ghostscript-10.05.1 && \
+./configure --without-luratech --prefix=/opt && \
+make all && \
+make install
+
+RUN mkdir -p export/bin && \
+ cp /opt/bin/gs export/bin 
+
+RUN cd export && \
+ zip -yr /var/task/ghostscript-10.05.1.zip ./*
+
+CMD ["/bin/bash"]
+
