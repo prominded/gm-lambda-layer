@@ -10,4 +10,4 @@ docker run --rm gm-lambda-layer cat /tmp/gm-1.3.31.zip > ./graphicsmagick.zip
 
 
 docker build -t gs100501-layer .    #dockile >> Dockerfile_gs
-docker run --rm gs100501-layer cat /tmp/gm-1.3.31.zip > ./graphicsmagick.zip
+docker run --rm gs100501-layer cat /var/task/ghostscript_v2-10.05.1.zip > ./ghostscript_v2-10.05.1.zip
