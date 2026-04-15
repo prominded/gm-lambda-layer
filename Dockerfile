@@ -29,7 +29,7 @@ RUN dnf update -y && dnf install -y \
 
 WORKDIR /tmp/build
 
-# Ghostscript
+# Build Ghostscript
 RUN curl -fL -o ghostscript.tar.xz \
     "https://github.com/ArtifexSoftware/ghostpdl-downloads/releases/download/gs10070/ghostscript-${GS_VERSION}.tar.xz" \
  && tar -xf ghostscript.tar.xz \
@@ -41,7 +41,7 @@ RUN curl -fL -o ghostscript.tar.xz \
  && make -j"$(nproc)" \
  && make install
 
-# GraphicsMagick
+# Build GraphicsMagick
 RUN curl -fL -o GraphicsMagick.tar.xz \
     "https://downloads.sourceforge.net/project/graphicsmagick/graphicsmagick/${GM_VERSION}/GraphicsMagick-${GM_VERSION}.tar.xz" \
  && tar -xf GraphicsMagick.tar.xz \
@@ -66,22 +66,26 @@ RUN mkdir -p \
 RUN cp -av /usr/local/bin/gm ${PREFIX}/bin/ \
  && cp -av /usr/local/bin/gs ${PREFIX}/bin/
 
-# Copy direct shared libraries from local installs
-RUN find /usr/local/lib /usr/local/lib64 -maxdepth 1 -type f -name '*.so*' -exec cp -av {} ${PREFIX}/lib/ \; || true
+# Copy direct shared libraries from local installs, preserving symlinks
+RUN bash -lc 'for d in /usr/local/lib /usr/local/lib64; do \
+      [ -d "$d" ] || continue; \
+      find "$d" -maxdepth 1 \( -type f -o -type l \) -name "*.so*" -exec cp -a {} ${PREFIX}/lib/ \; ; \
+    done' || true
 
-# Copy runtime dependencies for gm and gs, preserving symlinks
+# Copy runtime dependencies for gm and gs, preserving symlinks and real files
 RUN bash -lc 'for bin in /usr/local/bin/gm /usr/local/bin/gs; do \
       ldd "$bin" | awk "{print \$3}" | grep "^/" | sort -u | while read -r lib; do \
-        cp -av --parents "$lib" /tmp/deps; \
+        cp -a --parents "$lib" /tmp/deps; \
         real="$(readlink -f "$lib" || true)"; \
-        [ -n "$real" ] && [ -f "$real" ] && cp -av --parents "$real" /tmp/deps || true; \
+        [ -n "$real" ] && [ -f "$real" ] && cp -a --parents "$real" /tmp/deps || true; \
       done; \
     done' \
- && find /tmp/deps -type f -name '*.so*' -exec cp -av {} ${PREFIX}/lib/ \; || true
+ && find /tmp/deps \( -type f -o -type l \) -name '*.so*' -exec cp -a {} ${PREFIX}/lib/ \; || true
 
-# Copy common system libs Ghostscript/GM often need in Lambda
+# Copy common system libs Ghostscript/GM often need in Lambda, preserving symlinks
 RUN bash -lc 'for p in /lib64 /usr/lib64; do \
-      find "$p" -maxdepth 1 \( \
+      [ -d "$p" ] || continue; \
+      find "$p" -maxdepth 1 \( -type f -o -type l \) \( \
         -name "libexpat.so*" -o \
         -name "libfontconfig.so*" -o \
         -name "libfreetype.so*" -o \
@@ -92,8 +96,17 @@ RUN bash -lc 'for p in /lib64 /usr/lib64; do \
         -name "libz.so*" -o \
         -name "liblcms2.so*" -o \
         -name "libxml2.so*" \
-      \) -exec cp -av {} ${PREFIX}/lib/ \; ; \
+      \) -exec cp -a {} ${PREFIX}/lib/ \; ; \
     done'
+
+# Recreate critical SONAME symlinks explicitly
+RUN bash -lc 'cd ${PREFIX}/lib && \
+    [ -f libGraphicsMagick.so.3.26.0 ] && ln -sf libGraphicsMagick.so.3.26.0 libGraphicsMagick.so.3 || true && \
+    [ -e libGraphicsMagick.so.3 ] && ln -sf libGraphicsMagick.so.3 libGraphicsMagick.so || true && \
+    [ -f libGraphicsMagick++.so.12.8.2 ] && ln -sf libGraphicsMagick++.so.12.8.2 libGraphicsMagick++.so.12 || true && \
+    [ -e libGraphicsMagick++.so.12 ] && ln -sf libGraphicsMagick++.so.12 libGraphicsMagick++.so || true && \
+    [ -f libGraphicsMagickWand.so.2.10.2 ] && ln -sf libGraphicsMagickWand.so.2.10.2 libGraphicsMagickWand.so.2 || true && \
+    [ -e libGraphicsMagickWand.so.2 ] && ln -sf libGraphicsMagickWand.so.2 libGraphicsMagickWand.so || true'
 
 # Fonts and fontconfig
 RUN cp -avr /etc/fonts/* ${PREFIX}/etc/fonts/ || true \
@@ -104,7 +117,7 @@ RUN strip --strip-unneeded ${PREFIX}/bin/gm || true \
  && strip --strip-unneeded ${PREFIX}/bin/gs || true \
  && find ${PREFIX}/lib -type f -name '*.so*' -exec strip --strip-unneeded {} \; || true
 
-# Create zip with layer root = /opt contents
+# Package layer
 WORKDIR ${PREFIX}
 RUN zip -r9 /tmp/graphicsmagick-ghostscript-al2023-layer.zip .
 
