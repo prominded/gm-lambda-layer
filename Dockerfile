@@ -45,7 +45,24 @@ RUN mkdir -p \
     ${PREFIX}/bin \
     ${PREFIX}/lib \
     ${PREFIX}/etc/fonts \
-    ${PREFIX}/share/fonts
+    ${PREFIX}/share/fonts \
+    ${PREFIX}/share
+
+RUN bash -lc '\
+set -e; \
+echo "Searching for GraphicsMagick config dirs..."; \
+find /usr/local -type d | grep -i GraphicsMagick || true; \
+find /usr/local -type f | grep -E "delegates|type.mgk|colors.mgk|modules.mgk|log.mgk" || true; \
+gm_dir="$(find /usr/local -type d | grep -E "/GraphicsMagick-[0-9.]+" | head -n 1 || true)"; \
+if [ -n "$gm_dir" ]; then \
+  mkdir -p ${PREFIX}/share; \
+  cp -a "$gm_dir" ${PREFIX}/share/; \
+  ln -sfn "$(basename "$gm_dir")" ${PREFIX}/share/GraphicsMagick; \
+  echo "Copied GraphicsMagick config dir: $gm_dir"; \
+else \
+  echo "No GraphicsMagick config directory found"; \
+  exit 1; \
+fi'
 
 # Copy binary
 RUN cp -a /usr/local/bin/gm ${PREFIX}/bin/
