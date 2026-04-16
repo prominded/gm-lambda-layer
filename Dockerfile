@@ -68,8 +68,17 @@ fi'
 RUN cp -a /usr/local/bin/gm ${PREFIX}/bin/
 
 # Copy fonts and fontconfig if needed by delegates/font rendering
-RUN cp -a /etc/fonts/. ${PREFIX}/etc/fonts/ || true \
- && cp -a /usr/share/fonts/. ${PREFIX}/share/fonts/ || true
+# Minimal fontconfig setup
+RUN rm -rf ${PREFIX}/etc/fonts || true \
+ && mkdir -p ${PREFIX}/etc/fonts \
+ && printf '%s\n' \
+'<?xml version="1.0"?>' \
+'<!DOCTYPE fontconfig SYSTEM "fonts.dtd">' \
+'<fontconfig>' \
+'  <dir>/opt/share/fonts</dir>' \
+'  <cachedir>/tmp/fontconfig-cache</cachedir>' \
+'</fontconfig>' \
+> ${PREFIX}/etc/fonts/fonts.conf
 
 # Recursively collect all shared-library dependencies for gm only
 RUN bash -lc '\
