@@ -1,0 +1,173 @@
+FROM public.ecr.aws/amazonlinux/amazonlinux:2023 AS builder
+
+ARG GM_VERSION=1.3.46
+ARG GS_VERSION=10.07.0
+
+ENV PREFIX=/opt/layer \
+    PKG_CONFIG_PATH=/usr/local/lib/pkgconfig:/usr/local/lib64/pkgconfig:/usr/lib64/pkgconfig \
+    LD_LIBRARY_PATH=/usr/local/lib:/usr/local/lib64:/lib64:/usr/lib64
+
+RUN dnf update -y && dnf install -y \
+    gcc gcc-c++ make cmake autoconf automake libtool \
+    tar gzip xz bzip2 bzip2-devel zip unzip patch which file findutils \
+    wget git pkgconf-pkg-config \
+    glibc-devel glib2-devel \
+    zlib zlib-devel \
+    libjpeg-turbo libjpeg-turbo-devel \
+    libpng libpng-devel \
+    libtiff libtiff-devel \
+    libwebp libwebp-devel \
+    freetype freetype-devel \
+    fontconfig fontconfig-devel \
+    expat expat-devel \
+    lcms2 lcms2-devel \
+    libxml2 libxml2-devel \
+    perl \
+    ca-certificates \
+    ghostscript-tools-fonts \
+ && dnf clean all \
+ && rm -rf /var/cache/dnf
+
+WORKDIR /tmp/build
+
+# Build Ghostscript
+RUN curl -fL -o ghostscript.tar.xz \
+    "https://github.com/ArtifexSoftware/ghostpdl-downloads/releases/download/gs10070/ghostscript-${GS_VERSION}.tar.xz" \
+ && tar -xf ghostscript.tar.xz \
+ && cd ghostscript-${GS_VERSION} \
+ && ./configure \
+      --prefix=/usr/local \
+      --disable-gtk \
+      --without-x \
+ && make -j"$(nproc)" \
+ && make install
+
+# Build GraphicsMagick
+RUN curl -fL -o GraphicsMagick.tar.xz \
+    "https://downloads.sourceforge.net/project/graphicsmagick/graphicsmagick/${GM_VERSION}/GraphicsMagick-${GM_VERSION}.tar.xz" \
+ && tar -xf GraphicsMagick.tar.xz \
+ && cd GraphicsMagick-${GM_VERSION} \
+ && ./configure \
+      --prefix=/usr/local \
+      --enable-shared=yes \
+      --enable-static=no \
+      --with-gs-font-dir=/usr/share/fonts/default/Type1 \
+      --with-quantum-depth=16 \
+ && make -j"$(nproc)" \
+ && make install
+
+# Lambda layer structure
+RUN mkdir -p \
+    ${PREFIX}/bin \
+    ${PREFIX}/lib \
+    ${PREFIX}/etc/fonts/conf.d \
+    ${PREFIX}/share/fonts/type1
+
+# Copy only the executables
+RUN cp -a /usr/local/bin/gm ${PREFIX}/bin/ \
+ && cp -a /usr/local/bin/gs ${PREFIX}/bin/
+
+# Copy minimal fontconfig only
+RUN cp -a /etc/fonts/fonts.conf ${PREFIX}/etc/fonts/ \
+ && cp -a /etc/fonts/conf.d ${PREFIX}/etc/fonts/
+
+# Copy only Ghostscript Type1 fonts, not all system fonts
+RUN if [ -d /usr/share/fonts/default/Type1 ]; then \
+      cp -a /usr/share/fonts/default/Type1/. ${PREFIX}/share/fonts/type1/; \
+    fi
+
+# Recursively collect only runtime shared library dependencies for gm and gs
+RUN bash -lc '\
+set -euo pipefail; \
+mkdir -p /tmp/depstage; \
+seen=/tmp/seen-libs.txt; \
+touch "$seen"; \
+copy_dep() { \
+  local item="$1"; \
+  [ -e "$item" ] || return 0; \
+  grep -Fxq "$item" "$seen" && return 0; \
+  echo "$item" >> "$seen"; \
+  if [ -f "$item" ] || [ -L "$item" ]; then \
+    cp -a "$item" /tmp/depstage/ || true; \
+  fi; \
+  local real=""; \
+  real="$(readlink -f "$item" 2>/dev/null || true)"; \
+  if [ -n "$real" ] && [ -e "$real" ]; then \
+    grep -Fxq "$real" "$seen" || echo "$real" >> "$seen"; \
+    cp -a "$real" /tmp/depstage/ || true; \
+  fi; \
+  if [ -x "$item" ] || [[ "$item" == *.so* ]]; then \
+    ldd "$item" 2>/dev/null | awk '\''/=> \// {print $3} /^\// {print $1}'\'' | sort -u | while read -r dep; do \
+      [ -n "$dep" ] && copy_dep "$dep"; \
+    done; \
+  fi; \
+}; \
+copy_dep /usr/local/bin/gm; \
+copy_dep /usr/local/bin/gs; \
+cp -a /tmp/depstage/. ${PREFIX}/lib/ || true; \
+true'
+
+# Copy locally built GraphicsMagick/Ghostscript libs and symlinks from /usr/local, but only direct files there
+RUN bash -lc '\
+for d in /usr/local/lib /usr/local/lib64; do \
+  [ -d "$d" ] || continue; \
+  find "$d" -maxdepth 1 \( -type f -o -type l \) -name "*.so*" -exec cp -a {} ${PREFIX}/lib/ \; ; \
+done; \
+true'
+
+# Recreate major-version symlinks where needed, without failing on same-file cases
+RUN bash -lc '\
+set -euo pipefail; \
+cd ${PREFIX}/lib; \
+for f in *.so.*; do \
+  [ -e "$f" ] || continue; \
+  base="$(echo "$f" | sed -E "s/(\\.so\\.[0-9]+).*/\\1/")"; \
+  plain="$(echo "$base" | sed -E "s/(\\.so)\\.[0-9]+$/\\1/")"; \
+  if [ "$f" != "$base" ]; then \
+    ln -sf "$f" "$base"; \
+  fi; \
+  if [ "$base" != "$plain" ]; then \
+    if [ ! -e "$plain" ] || [ -L "$plain" ]; then \
+      ln -sf "$base" "$plain"; \
+    fi; \
+  fi; \
+done; \
+true'
+
+# Remove junk to reduce size
+RUN rm -rf \
+    ${PREFIX}/include \
+    ${PREFIX}/share/doc \
+    ${PREFIX}/share/man \
+    ${PREFIX}/share/info \
+    ${PREFIX}/share/gtk-doc \
+    ${PREFIX}/share/locale \
+    ${PREFIX}/lib/pkgconfig \
+    /tmp/build \
+    /tmp/depstage \
+    /tmp/seen-libs.txt \
+ && find ${PREFIX} -type f \( -name "*.a" -o -name "*.la" \) -delete || true \
+ && find ${PREFIX} -type f -name "*.h" -delete || true \
+ && find ${PREFIX} -type f -name "*.cmake" -delete || true \
+ && find ${PREFIX} -type f -name "*.pc" -delete || true \
+ && find ${PREFIX} -type d -name "__pycache__" -prune -exec rm -rf {} + || true
+
+# Strip binaries and shared libs
+RUN strip --strip-unneeded ${PREFIX}/bin/gm || true \
+ && strip --strip-unneeded ${PREFIX}/bin/gs || true \
+ && find ${PREFIX}/lib -type f -name '*.so*' -exec strip --strip-unneeded {} \; || true
+
+# Helpful size check during build
+RUN bash -lc '\
+echo "===== layer size summary ====="; \
+du -sh ${PREFIX}; \
+du -sh ${PREFIX}/bin ${PREFIX}/lib ${PREFIX}/etc ${PREFIX}/share || true; \
+echo "===== biggest files ====="; \
+find ${PREFIX} -type f -printf "%s %p\n" | sort -nr | head -40; \
+true'
+
+WORKDIR ${PREFIX}
+RUN zip -r9 /tmp/graphicsmagick-ghostscript-al2023-layer.zip .
+
+FROM scratch
+COPY --from=builder /tmp/graphicsmagick-ghostscript-al2023-layer.zip /graphicsmagick-ghostscript-al2023-layer.zip
