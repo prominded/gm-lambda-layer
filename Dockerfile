@@ -63,54 +63,79 @@ RUN mkdir -p \
     ${PREFIX}/share/fonts
 
 # Copy binaries
-RUN cp -av /usr/local/bin/gm ${PREFIX}/bin/ \
- && cp -av /usr/local/bin/gs ${PREFIX}/bin/
+RUN cp -a /usr/local/bin/gm ${PREFIX}/bin/ \
+ && cp -a /usr/local/bin/gs ${PREFIX}/bin/
 
-# Copy direct shared libraries from local installs, preserving symlinks
-RUN bash -lc 'for d in /usr/local/lib /usr/local/lib64; do \
-      [ -d "$d" ] || continue; \
-      find "$d" -maxdepth 1 \( -type f -o -type l \) -name "*.so*" -exec cp -a {} ${PREFIX}/lib/ \; ; \
-    done' || true
+# Copy fonts and fontconfig
+RUN cp -a /etc/fonts/. ${PREFIX}/etc/fonts/ || true \
+ && cp -a /usr/share/fonts/. ${PREFIX}/share/fonts/ || true
 
-# Copy runtime dependencies for gm and gs, preserving symlinks and real files
-RUN bash -lc 'for bin in /usr/local/bin/gm /usr/local/bin/gs; do \
-      ldd "$bin" | awk "{print \$3}" | grep "^/" | sort -u | while read -r lib; do \
-        cp -a --parents "$lib" /tmp/deps; \
-        real="$(readlink -f "$lib" || true)"; \
-        [ -n "$real" ] && [ -f "$real" ] && cp -a --parents "$real" /tmp/deps || true; \
-      done; \
-    done' \
- && find /tmp/deps \( -type f -o -type l \) -name '*.so*' -exec cp -a {} ${PREFIX}/lib/ \; || true
+# Recursively collect all shared-library dependencies for gm and gs.
+# This avoids manually chasing missing .so files one by one.
+RUN bash -lc '\
+set -euo pipefail; \
+mkdir -p /tmp/depstage; \
+seen_file=/tmp/seen-libs.txt; \
+touch "$seen_file"; \
+queue="/usr/local/bin/gm /usr/local/bin/gs"; \
+resolve_and_copy() { \
+  local lib="$1"; \
+  [ -e "$lib" ] || return 0; \
+  grep -Fxq "$lib" "$seen_file" && return 0; \
+  echo "$lib" >> "$seen_file"; \
+  cp -a "$lib" /tmp/depstage/ || true; \
+  local real; \
+  real="$(readlink -f "$lib" || true)"; \
+  if [ -n "${real:-}" ] && [ -e "$real" ]; then \
+    grep -Fxq "$real" "$seen_file" || echo "$real" >> "$seen_file"; \
+    cp -a "$real" /tmp/depstage/ || true; \
+  fi; \
+  local out; \
+  out="$(ldd "$lib" 2>/dev/null || true)"; \
+  echo "$out" | awk '\''/=> \// {print $3} /^\// {print $1}'\'' | sort -u | while read -r dep; do \
+    [ -n "$dep" ] && resolve_and_copy "$dep"; \
+  done; \
+}; \
+for item in $queue; do \
+  resolve_and_copy "$item"; \
+done; \
+cp -a /tmp/depstage/. ${PREFIX}/lib/ || true; \
+true'
 
-# Copy common system libs Ghostscript/GM often need in Lambda, preserving symlinks
-RUN bash -lc 'for p in /lib64 /usr/lib64; do \
-      [ -d "$p" ] || continue; \
-      find "$p" -maxdepth 1 \( -type f -o -type l \) \( \
-        -name "libexpat.so*" -o \
-        -name "libfontconfig.so*" -o \
-        -name "libfreetype.so*" -o \
-        -name "libjpeg.so*" -o \
-        -name "libpng*.so*" -o \
-        -name "libtiff.so*" -o \
-        -name "libwebp.so*" -o \
-        -name "libz.so*" -o \
-        -name "liblcms2.so*" -o \
-        -name "libxml2.so*" \
-      \) -exec cp -a {} ${PREFIX}/lib/ \; ; \
-    done'
+# Copy directly installed /usr/local shared libs too, including symlinks
+RUN bash -lc '\
+for d in /usr/local/lib /usr/local/lib64; do \
+  [ -d "$d" ] || continue; \
+  find "$d" -maxdepth 1 \( -type f -o -type l \) -name "*.so*" -exec cp -a {} ${PREFIX}/lib/ \; ; \
+done; \
+true'
 
-# Recreate critical SONAME symlinks explicitly
-RUN bash -lc 'cd ${PREFIX}/lib && \
-    [ -f libGraphicsMagick.so.3.26.0 ] && ln -sf libGraphicsMagick.so.3.26.0 libGraphicsMagick.so.3 || true && \
-    [ -e libGraphicsMagick.so.3 ] && ln -sf libGraphicsMagick.so.3 libGraphicsMagick.so || true && \
-    [ -f libGraphicsMagick++.so.12.8.2 ] && ln -sf libGraphicsMagick++.so.12.8.2 libGraphicsMagick++.so.12 || true && \
-    [ -e libGraphicsMagick++.so.12 ] && ln -sf libGraphicsMagick++.so.12 libGraphicsMagick++.so || true && \
-    [ -f libGraphicsMagickWand.so.2.10.2 ] && ln -sf libGraphicsMagickWand.so.2.10.2 libGraphicsMagickWand.so.2 || true && \
-    [ -e libGraphicsMagickWand.so.2 ] && ln -sf libGraphicsMagickWand.so.2 libGraphicsMagickWand.so || true'
+# Recreate SONAME symlinks automatically for versioned shared libs
+RUN bash -lc '\
+set -euo pipefail; \
+cd ${PREFIX}/lib; \
+for f in *.so.*; do \
+  [ -e "$f" ] || continue; \
+  base="$(echo "$f" | sed -E "s/(\\.so\\.[0-9]+).*/\\1/")"; \
+  plain="$(echo "$base" | sed -E "s/(\\.so)\\.[0-9]+$/\\1/")"; \
+  if [ "$f" != "$base" ]; then \
+    ln -sf "$f" "$base"; \
+  fi; \
+  if [ "$base" != "$plain" ]; then \
+    ln -sf "$base" "$plain"; \
+  fi; \
+done; \
+true'
 
-# Fonts and fontconfig
-RUN cp -avr /etc/fonts/* ${PREFIX}/etc/fonts/ || true \
- && cp -avr /usr/share/fonts/* ${PREFIX}/share/fonts/ || true
+# Validate before packaging
+RUN bash -lc '\
+echo "=== gm deps ==="; \
+ldd /usr/local/bin/gm || true; \
+echo "=== gs deps ==="; \
+ldd /usr/local/bin/gs || true; \
+echo "=== packaged GraphicsMagick/WebP libs ==="; \
+ls -l ${PREFIX}/lib | egrep "GraphicsMagick|webp|jpeg|png|tiff|fontconfig|freetype|xml2|lcms|expat|z\\.so" || true; \
+true'
 
 # Optional size reduction
 RUN strip --strip-unneeded ${PREFIX}/bin/gm || true \
